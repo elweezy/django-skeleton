@@ -1,11 +1,12 @@
 from django.conf import settings
+from django.core.urlresolvers import reverse
 from django.utils.translation import ugettext_lazy as _
 from django.utils.translation import LANGUAGE_SESSION_KEY, check_for_language
 from ipware.ip import get_real_ip, get_ip
 from django.db.models import Q
 
-from blog import models as blog_models
 from . import models
+from blog import models as blog_models
 
 ''' Entities '''
 
@@ -167,7 +168,7 @@ class DataController(object):
         return models.Language.objects.filter(code=code).exists()
 
 
-class PageLogic(object):
+class ViewPage(object):
     SESSION_APP_LANGUAGE_KEY = 'app_lang'
     DEFAULT_LANGUAGE_CODE = 'en'
 
@@ -177,9 +178,6 @@ class PageLogic(object):
     settings_manager = None
     browser_store_manager = None
 
-    def _check_for_language(self, code):
-        return DataController.check_for_language(code)
-
     def __init__(self, request):
         self.request = request
         # Initialize managers
@@ -188,6 +186,11 @@ class PageLogic(object):
         # Set initial values
         self._set_client()
         self._set_context()
+
+    ''' Private members '''
+
+    def _check_for_language(self, code):
+        return DataController.check_for_language(code)
 
     def _set_client(self):
         self.client = Client()
@@ -213,6 +216,17 @@ class PageLogic(object):
             'client': self.client,
             'languages': DataController.get_languages()
         }
+
+    ''' Public members '''
+
+    def is_get(self):
+        return self.request.method == "GET"
+
+    def is_post(self):
+        return self.request.method == "POST"
+
+    def is_ajax(self):
+        return self.request.is_ajax()
 
     def store_request(self):
         if not settings.APPLICATION_MONITORING:
@@ -247,6 +261,17 @@ class PageLogic(object):
         user_request.save()
         return user_request
 
+    def set_to_context(self, key, value):
+        self.context[key] = value
+
+    def set_language(self, code, response=None):
+        if not (self._check_for_language(code) and check_for_language(code)):
+            raise Exception(_("Given language code ({}) is not correct!".format(code)))
+        self.browser_store_manager.set(self.SESSION_APP_LANGUAGE_KEY, code, response=response)
+        self.browser_store_manager.set(LANGUAGE_SESSION_KEY, code, response=response)
+        self.client.language = code
+        self.client.language_obj = DataController.get_language(code)
+
     def get_param(self, key):
         if self.request.method == 'GET':
             return self.request.GET.get(key, None)
@@ -258,14 +283,6 @@ class PageLogic(object):
             return self.request.GET.getlist(key, None)
         else:
             return self.request.POST.getlist(key, None)
-
-    def set_language(self, code, response=None):
-        if not (self._check_for_language(code) and check_for_language(code)):
-            raise Exception(_("Given language code ({}) is not correct!".format(code)))
-        self.browser_store_manager.set(self.SESSION_APP_LANGUAGE_KEY, code, response=response)
-        self.browser_store_manager.set(LANGUAGE_SESSION_KEY, code, response=response)
-        self.client.language = code
-        self.client.language_obj = DataController.get_language(code)
 
     def new_event_logger(self, title):
         event_logger = EventLogger(title, self.client)
@@ -283,3 +300,37 @@ class PageLogic(object):
         result['posts'] = posts
 
         return result
+
+
+from django.http import HttpResponse
+import json
+
+
+def search_autocomplete(request):
+    if request.is_ajax():
+        q = request.GET.get('term', '')
+        posts = blog_models.Post.objects.filter(Q(title__contains=q))
+        results = []
+
+        for post in posts:
+            autocomplete_json = {}
+            autocomplete_json['id'] = post.id
+            autocomplete_json['label'] = post.title
+            autocomplete_json['desc'] = 'Post'
+            autocomplete_json['value'] = post.title
+            autocomplete_json['url'] = reverse('blog_post', kwargs={'post_id': post.pk, 'post_slug': post.slug})
+            results.append(autocomplete_json)
+        pages = blog_models.Page.objects.filter(Q(title__contains=q))
+        for page in pages:
+            autocomplete_json = {}
+            autocomplete_json['id'] = page.id
+            autocomplete_json['label'] = post.title
+            autocomplete_json['desc'] = 'Page'
+            autocomplete_json['value'] = page.title
+            autocomplete_json['value'] = page.title
+            results.append(autocomplete_json)
+        data = json.dumps(results)
+    else:
+        data = 'fail'
+    mimetype = 'application/json'
+    return HttpResponse(data, mimetype)
